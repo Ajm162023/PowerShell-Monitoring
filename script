@@ -1,0 +1,103 @@
+$baseDirs = @(
+    "D:\FileDB\GHR\Archive\WORKUNIT",
+    "D:\FileDB\GHR\Archive\TM",
+    "D:\FileDB\GHR\Archive\PFI",
+    "D:\FileDB\GHR\Archive\IFS",
+    "D:\FileDB\GHR\Archive\HR",
+    "D:\FileDB\GHR\Archive\GHRHISTORY",
+    "D:\FileDB\GHR\Archive\GHR_REP",
+    "D:\FileDB\GHR\Archive\GHR_FULL"
+)
+
+$smtpServer = "smtp.office365.com"
+$smtpPort = 587
+$emailFrom = "emailHere"
+$emailTo = @("emailHere")
+$subject = "GHR Log Files and Counts"
+$body = ""
+
+# Set the security protocol
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+$body = "<html><body>"
+$totalPendingFiles = 0
+$totalCompletedFiles = 0
+$allTasksCompleted = $true
+
+foreach ($baseDir in $baseDirs) {
+    try {
+        Write-Output "Searching in: $baseDir"
+
+        # Find the most recent date directory
+        $latestDateDir = Get-ChildItem $baseDir -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+        if ($latestDateDir) {
+            $pendingDir = Join-Path $latestDateDir.FullName "Pending"
+            $completedDir = Join-Path $latestDateDir.FullName "Completed"
+            Write-Output "Checking Pending directory: $pendingDir"
+            Write-Output "Checking Completed directory: $completedDir"
+
+            if (Test-Path $pendingDir) {
+                # Use a wildcard filter to catch any variations in the file name
+                $logFiles = Get-ChildItem $pendingDir -Filter "*log*" -ErrorAction SilentlyContinue
+                Write-Output "Log files found: $($logFiles.Count)"
+
+                foreach ($logFile in $logFiles) {
+                    Write-Output "Found log file: $($logFile.FullName)"
+                    $logContent = Get-Content $logFile.FullName -Raw
+
+                    if ($logContent -match "Program Finished") {
+                        $body += "The batch file in $baseDir has completed successfully.<br>"
+                    } elseif ($logContent -match "Error") {
+                        # Extract lines with errors and a few lines of context
+                        $errorLines = $logContent -split "`n" | Select-String -Pattern "Error" -Context 3,3
+                        $errorDetails = $errorLines | ForEach-Object { $_.Line }
+                        $body += "Error found in $baseDir :<br>$errorDetails<br>"
+                    } else {
+                        $allTasksCompleted = $false
+                    }
+                }
+
+                if ($logFiles.Count -eq 0) {
+                    Write-Output "No log files found in $pendingDir"
+                    $body += "No log files found in $pendingDir.<br>"
+                }
+
+                $pendingFilesCount = (Get-ChildItem $pendingDir -File | Where-Object { $_.Name -ne "log" -and $_.Name -ne "log.txt" }).Count
+                $totalPendingFiles += $pendingFilesCount
+                $body += "Number of files in Pending directory (excluding log files): $pendingFilesCount<br>"
+            } else {
+                Write-Output "Pending directory not found: $pendingDir"
+                $body += "Pending directory not found: $pendingDir.<br>"
+            }
+
+            if (Test-Path $completedDir) {
+                $completedFilesCount = (Get-ChildItem $completedDir -File | Where-Object { $_.Name -ne "log" -and $_.Name -ne "log.txt" }).Count
+                $totalCompletedFiles += $completedFilesCount
+                $body += "Number of files in Completed directory (excluding log files): $completedFilesCount<br>"
+            } else {
+                Write-Output "Completed directory not found: $completedDir"
+                $body += "Completed directory not found: $completedDir.<br>"
+            }
+        } else {
+            Write-Output "No date directories found in $baseDir"
+            $body += "No date directories found in $baseDir.<br>"
+        }
+    } catch {
+        Write-Output "Error processing $baseDir : $_.Exception.Message"
+        $body += "Error processing $baseDir : $_.Exception.Message<br>"
+    }
+}
+
+$body += "<br>Total number of files in all Pending directories (excluding log files): $totalPendingFiles<br>"
+$body += "Total number of files in all Completed directories (excluding log files): $totalCompletedFiles<br>"
+$body += "</body></html>"
+
+if ($allTasksCompleted) {
+    # Convert password to secure string and create credential object
+    $password = ConvertTo-SecureString "PasswordHere" -AsPlainText -Force
+    $credential = New-Object System.Management.Automation.PSCredential ($emailFrom, $password)
+
+    # Send the email using Send-MailMessage
+    Send-MailMessage -From $emailFrom -To $emailTo -Subject $subject -Body $body -BodyAsHtml -SmtpServer $smtpServer -Port $smtpPort -UseSsl -Credential $credential -Verbose
+}
